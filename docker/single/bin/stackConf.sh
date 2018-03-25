@@ -1,0 +1,1 @@
+STACK_NAME=rabbitmp_test_single
