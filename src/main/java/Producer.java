@@ -32,19 +32,78 @@ public class Producer {
     @Parameter(names = { "-m", "--msg" }, description = "Message to send")
     private String message;
 
+    @Parameter(names = { "-d", "--deamon" }, description = "runs producer as deamon")
+    private boolean deamon = false;
+
+    @Parameter(names = { "-s", "--sleep" }, description = "sleep time between send request")
+    private Integer sleep;
+
+    private ConnectionFactory factory;
+    private Connection connection = null;
+    private Channel channel = null;
+
+    private void sendOnce() throws IOException {
+        channel.basicPublish("", queueName, null, message.getBytes());
+        logger.error ("Producer-" + this.id + " send: " + message);
+    }
+
+    private void sendEndless() throws IOException, InterruptedException {
+        int count = 0;
+        while (true) {
+            try {
+                if (!connection.isOpen()) {
+                    connect();
+                }
+                count++;
+                String msg = "(Run " + count + ") " + message;
+                if (connection.isOpen()) {
+                    channel.basicPublish("", queueName, null, msg.getBytes());
+                    logger.info("Producer-" + this.id + " send: " + msg);
+                }
+                else {
+                    logger.info("Producer-" + this.id + " connection closed >:(");
+                }
+                if (sleep!=null) {
+                    Thread.sleep(sleep);
+                }
+            }
+            catch(Exception e) {
+                e.printStackTrace();
+            }
+        }
+    }
+
+    private void connect() throws IOException, TimeoutException {
+        try {
+            if (channel!=null) {
+                channel.close();
+            }
+            if (connection!=null) {
+                connection.close();
+            }
+        }
+        catch(Exception e) {
+            logger.error(e.getClass().getName() + ": " + e.getMessage());
+        }
+        factory = new ConnectionFactory();
+        factory.setHost(address);
+        factory.setPort(port);
+        factory.setAutomaticRecoveryEnabled(false);
+        connection = factory.newConnection();
+        channel = connection.createChannel();
+        channel.queueDeclare(queueName, false, false, false, null);
+    }
+
     private void run() throws IOException, TimeoutException {
-        Connection connection = null;
-        Channel channel = null;
         try {
             logger.info("Hi, I am Producer with id: "+id);
-            ConnectionFactory factory = new ConnectionFactory();
-            factory.setHost(address);
-            factory.setPort(port);
-            connection = factory.newConnection();
-            channel = connection.createChannel();
-            channel.queueDeclare(queueName, false, false, false, null);
-            channel.basicPublish("", queueName, null, message.getBytes());
-            logger.error ("Producer-" + this.id + " send: " + message);
+            connect();
+            if (deamon) {
+                sendEndless();
+            }
+            else {
+                sendOnce();
+            }
         }
         catch (Exception e) {
             logger.error ("Producer-" + this.id + ": [" + e.getClass().getName() + "] " + e.getMessage());
