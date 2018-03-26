@@ -4,9 +4,8 @@ import java.util.concurrent.TimeoutException;
 
 import com.beust.jcommander.JCommander;
 import com.beust.jcommander.Parameter;
-import com.rabbitmq.client.ConnectionFactory;
-import com.rabbitmq.client.Connection;
-import com.rabbitmq.client.Channel;
+import com.rabbitmq.client.*;
+import connection.BrokerConnection;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -38,66 +37,42 @@ public class Producer {
     @Parameter(names = { "-s", "--sleep" }, description = "sleep time between send request")
     private Integer sleep;
 
-    private ConnectionFactory factory;
-    private Connection connection = null;
-    private Channel channel = null;
-
-    private void sendOnce() throws IOException {
-        channel.basicPublish("", queueName, null, message.getBytes());
-        logger.error ("Producer-" + this.id + " send: " + message);
+    private void sendOnce() throws IOException, TimeoutException {
+        Channel channel = BrokerConnection.getInst().getChannel(queueName);
+        if (channel!=null && channel.isOpen()) {
+            channel.basicPublish("", queueName, null, message.getBytes());
+            logger.info(String.format("Producer: %s send: %s", this.id,message));
+        }
+        else {
+            logger.error(String.format("channel not ready: %s", this.queueName));
+        }
     }
 
-    private void sendEndless() throws IOException, InterruptedException {
+    private void sendEndless() throws IOException, InterruptedException, TimeoutException {
         int count = 0;
         while (true) {
             try {
-                if (!connection.isOpen()) {
-                    connect();
-                }
                 count++;
                 String msg = "(Run " + count + ") " + message;
-                if (connection.isOpen()) {
+                Channel channel = BrokerConnection.getInst().getChannel(queueName);
+                if (null != channel && channel.isOpen()) {
                     channel.basicPublish("", queueName, null, msg.getBytes());
-                    logger.info("Producer-" + this.id + " send: " + msg);
                 }
-                else {
-                    logger.info("Producer-" + this.id + " connection closed >:(");
-                }
+                logger.info(String.format("Producer: %s send: %s", this.id,msg));
                 if (sleep!=null) {
                     Thread.sleep(sleep);
                 }
             }
             catch(Exception e) {
-                e.printStackTrace();
+                logger.error(String.format("[%s] %s", e.getClass().getName(),e.getMessage()));
             }
         }
-    }
-
-    private void connect() throws IOException, TimeoutException {
-        try {
-            if (channel!=null) {
-                channel.close();
-            }
-            if (connection!=null) {
-                connection.close();
-            }
-        }
-        catch(Exception e) {
-            logger.error(e.getClass().getName() + ": " + e.getMessage());
-        }
-        factory = new ConnectionFactory();
-        factory.setHost(address);
-        factory.setPort(port);
-        factory.setAutomaticRecoveryEnabled(false);
-        connection = factory.newConnection();
-        channel = connection.createChannel();
-        channel.queueDeclare(queueName, false, false, false, null);
     }
 
     private void run() throws IOException, TimeoutException {
         try {
-            logger.info("Hi, I am Producer with id: "+id);
-            connect();
+            logger.info(String.format("Hi, I am Producer with id: %s", this.id));
+            BrokerConnection.getInst().init(address,port);
             if (deamon) {
                 sendEndless();
             }
@@ -106,15 +81,7 @@ public class Producer {
             }
         }
         catch (Exception e) {
-            logger.error ("Producer-" + this.id + ": [" + e.getClass().getName() + "] " + e.getMessage());
-        }
-        finally {
-            if (channel!=null) {
-                channel.close();
-            }
-            if (connection!=null) {
-                connection.close();
-            }
+            logger.error(String.format("[%s] %s", e.getClass().getName(),e.getMessage()));
         }
     }
 

@@ -1,6 +1,7 @@
 import com.beust.jcommander.JCommander;
 import com.beust.jcommander.Parameter;
 import com.rabbitmq.client.*;
+import connection.BrokerConnection;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -25,29 +26,50 @@ public class Consumer {
     @Parameter(names = {"-d", "--deamon"}, description = "runs producer as deamon")
     private boolean deamon = false;
 
-    private ConnectionFactory factory;
-    private Connection connection = null;
-    private Channel channel = null;
-
-
-    private void receiveOnce(com.rabbitmq.client.Consumer consumer) throws IOException {
-        channel.basicConsume(this.queueName, true, consumer);
+    private com.rabbitmq.client.Consumer createConsumer(Channel channel) {
+        return new DefaultConsumer(channel) {
+            @Override
+            public void handleDelivery(String consumerTag, Envelope envelope, AMQP.BasicProperties properties, byte[] body)
+                    throws IOException {
+                String message = new String(body, "UTF-8");
+                logger.info(String.format("Consumer: %s receive: %s", id,message));
+            }
+        };
     }
 
-    private void receiveEndless(com.rabbitmq.client.Consumer consumer) throws IOException {
+    private void receiveOnce() throws IOException, TimeoutException {
+        Channel channel = BrokerConnection.getInst().getChannel(queueName);
+        if (channel!=null && channel.isOpen()) {
+            channel.basicConsume(this.queueName, true, createConsumer(channel));
+        }
+        else {
+            logger.error(String.format("channel not ready: %s", this.queueName));
+        }
+    }
+
+    private void receiveEndless() {
+        com.rabbitmq.client.Consumer consumer = null;
+        Channel channel = null;
         while (true) {
             try {
-                if (!connection.isOpen()) {
-                    connect();
+                if (channel!=null && channel.isOpen()) {
+                    if (consumer==null) consumer = createConsumer(channel);
+                    channel.basicConsume(this.queueName, true,consumer);
                 }
-                if (connection.isOpen()) {
-                    channel.basicConsume(this.queueName, true, consumer);
-                } else {
-                    logger.info("Consumer-" + id + " connection closed >:(");
-                    Thread.sleep(1000);
+                else {
+                    channel = BrokerConnection.getInst().getChannel(queueName);
+                    logger.error(String.format("channel not ready: %s", this.queueName));
                 }
             } catch (Exception e) {
-                e.printStackTrace();
+                logger.error(String.format("[%s] %s", e.getClass().getName(),e.getMessage()));
+                try {
+                    if (channel!=null) channel.close();
+                }
+                catch(Exception e2) {
+                    logger.error(String.format("error while additional channel close: [%s] %s", e.getClass().getName(),e.getMessage()));
+                }
+                channel = null;
+                consumer = null;
             }
         }
     }
@@ -55,34 +77,15 @@ public class Consumer {
     private void run() throws IOException, TimeoutException {
         try {
             logger.info("Hi, I am Consumer with id: " + id);
-            factory = new ConnectionFactory();
-            factory.setHost(address);
-            factory.setPort(port);
-            factory.setAutomaticRecoveryEnabled(true);
-            connect();
+            BrokerConnection.getInst().init(address,port);
 
-            com.rabbitmq.client.Consumer consumer = new DefaultConsumer(channel) {
-                @Override
-                public void handleDelivery(String consumerTag, Envelope envelope, AMQP.BasicProperties properties, byte[] body)
-                        throws IOException {
-                    String message = new String(body, "UTF-8");
-                    logger.info("Consumer-" + id + " receive: " + message);
-                }
-            };
             if (deamon) {
-                receiveEndless(consumer);
+                receiveEndless();
             } else {
-                receiveOnce(consumer);
+                receiveOnce();
             }
         } catch (Exception e) {
             logger.error("Consumer-" + this.id + ": [" + e.getClass().getName() + "] " + e.getMessage());
-        } finally {
-            if (channel != null) {
-                channel.close();
-            }
-            if (connection != null) {
-                connection.close();
-            }
         }
     }
 
@@ -102,27 +105,6 @@ public class Consumer {
         if (consumer.port == null) {
             consumer.port = Producer.DEFAULT_PORT;
         }
-
         consumer.run();
-    }
-
-    private void connect() throws IOException, TimeoutException {
-        try {
-            if (channel != null) {
-                channel.close();
-            }
-            if (connection != null) {
-                connection.close();
-            }
-        } catch (Exception e) {
-            logger.error(e.getClass().getName() + ": " + e.getMessage());
-        }
-        factory = new ConnectionFactory();
-        factory.setHost(address);
-        factory.setPort(port);
-        factory.setAutomaticRecoveryEnabled(false);
-        connection = factory.newConnection();
-        channel = connection.createChannel();
-        channel.queueDeclare(queueName, false, false, false, null);
     }
 }
